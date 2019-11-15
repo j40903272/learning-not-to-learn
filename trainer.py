@@ -104,7 +104,7 @@ class Trainer(object):
 
 
     def _train_step(self, data_loader, step):
-        _lambda = 0.01
+        _lambda = -0.1
 
         for i, (images,color_labels,labels) in enumerate(data_loader):
             
@@ -223,8 +223,8 @@ class Trainer(object):
             loss = self.loss(pred_label, torch.squeeze(labels))
             
             batch_size = images.shape[0]
-            total_num_correct += self._num_correct(pred_label,labels,topk=1).data[0]
-            total_loss += loss.data[0]*batch_size
+            total_num_correct += self._num_correct(pred_label,labels,topk=1).item()
+            total_loss += loss.item()*batch_size
             total_num_test += batch_size
                
         avg_loss = total_loss/total_num_test
@@ -283,6 +283,251 @@ class Trainer(object):
             self.scheduler_r.step()
             self.scheduler_g.step()
             self.scheduler_b.step()
+
+            if step == 1 or step % self.option.save_step == 0 or step == (self.option.max_step-1):
+                if val_loader is not None:
+                    self._validate(step, val_loader)
+                self._save_model(step)
+
+
+    def _get_variable(self, inputs):
+        if self.option.cuda:
+            return Variable(inputs.cuda())
+        return Variable(inputs)
+
+    
+    
+
+
+    
+class DADATrainer(object):
+    def __init__(self, option):
+        self.option = option
+
+        self._build_model()
+        self._set_optimizer()
+        self.logger = logger_setting(option.exp_name, option.save_dir, option.debug)
+
+    def _build_model(self):
+        self.n_color_cls = 8
+
+        self.net = models.WordCNN(vocab_size, word_seq_len, emb_size, l2_reg_lambda)
+        self.pred_net = models.BiasPredictor(num_filters_total)
+
+
+        self.loss = nn.CrossEntropyLoss(ignore_index=255)
+        self.bias_loss = nn.CrossEntropyLoss(ignore_index=255)
+
+
+        if self.option.cuda:
+            self.net.cuda()
+            self.pred_net.cuda()
+            self.loss.cuda()
+            self.bias_loss.cuda()
+
+    def _set_optimizer(self):
+        self.optim = optim.SGD(filter(lambda p: p.requires_grad, self.net.parameters()), lr=self.option.lr, momentum=self.option.momentum, weight_decay=self.option.weight_decay)
+        self.optim_bias = optim.SGD(self.pred_net.parameters(), lr=self.option.lr, momentum=self.option.momentum, weight_decay=self.option.weight_decay)
+
+
+        #TODO: last_epoch should be the last step of loaded model
+        lr_lambda = lambda step: self.option.lr_decay_rate ** (step // self.option.lr_decay_period)
+        self.scheduler = optim.lr_scheduler.LambdaLR(self.optim, lr_lambda=lr_lambda, last_epoch=-1)
+        self.scheduler_bias = optim.lr_scheduler.LambdaLR(self.optim_r, lr_lambda=lr_lambda, last_epoch=-1)
+        
+
+    @staticmethod
+    def _weights_init(m):
+        classname = m.__class__.__name__
+        if classname.find('Conv') != -1:
+            n = m.kernel_size[0] * m.kernel_size[1] * m.out_channels
+            m.weight.data.normal_(0, math.sqrt(2. / n))
+        elif classname.find('BatchNorm') != -1:
+            m.weight.data.fill_(1.0)
+            m.bias.data.zero_()
+
+    def _initialization(self):
+        self.net.apply(self._weights_init)
+
+
+        if self.option.is_train and self.option.use_pretrain:
+            if self.option.checkpoint is not None:
+                self._load_model()
+            else:
+                print("Pre-trained model not provided")
+
+
+
+    def _mode_setting(self, is_train=True):
+        if is_train:
+            self.net.train()
+            self.pred_net_bias.train()
+        else:
+            self.net.eval()
+            self.pred_net_bias.eval()
+
+
+
+    def _train_step(self, data_loader, step):
+        _lambda = 0.01
+
+        for i, (images,color_labels,labels) in enumerate(data_loader):
+            # data
+            images = self._get_variable(images)
+            color_labels = self._get_variable(color_labels)
+            labels = self._get_variable(labels)
+
+            # predict labels
+            self.optim.zero_grad()
+            self.optim_bias.zero_grad()
+
+            feat_label, pred_label = self.net(images)
+            # predict colors from feat_label. Their prediction should be uniform.
+            _,pseudo_pred_bias = self.pred_net_bias(feat_label)
+
+            # loss for self.net
+            loss_pred = self.loss(pred_label, torch.squeeze(labels))
+            loss_pseudo_pred_bias = torch.mean(torch.sum(pseudo_pred_bias*torch.log(pseudo_pred_bias),1))
+            loss = loss_pred + loss_pseudo_pred_bias*_lambda
+            loss.backward()
+            self.optim.step()
+
+
+
+
+            # predict bias
+            self.optim.zero_grad()
+            self.optim_bias.zero_grad()
+
+            feat_label, pred_label = self.net(images)
+            feat_color = grad_reverse(feat_label)
+            pred_bias,_ = self.pred_net_bias(feat_color)
+
+
+            # loss for rgb predictors
+            loss_pred_bias = self.color_loss(pred_bias, color_labels)
+            loss_pred_bias.backward()
+            self.optim.step()
+            self.optim_bias.step()
+
+
+            if i % self.option.log_step == 0:
+                msg = "[TRAIN] cls loss : %.6f, rgb : %.6f, MI : %.6f  (epoch %d.%02d)" \
+                       % (loss_pred, loss_pred_bias/3., loss_pseudo_pred_bias, step, int(100*i/data_loader.__len__()))
+                self.logger.info(msg)
+
+
+    def _train_step_baseline(self, data_loader, step):
+        for i, (images,color_labels,labels) in enumerate(data_loader):
+            
+            images = self._get_variable(images)
+            labels = self._get_variable(labels)
+
+            self.optim.zero_grad()
+            feat_label, pred_label = self.net(images)
+
+            # loss for self.net
+            loss_pred = self.loss(pred_label, torch.squeeze(labels))
+            loss_pred.backward()
+            self.optim.step()
+
+            # TODO: print elapsed time for iteration
+            if i % self.option.log_step == 0:
+                msg = "[TRAIN] cls loss : %.6f (epoch %d.%02d)" \
+                       % (loss_pred,step,int(100*i/data_loader.__len__()))
+                self.logger.info(msg)
+
+
+
+
+    def _validate(self, data_loader):
+        self._mode_setting(is_train=False)
+        self._initialization()
+        if self.option.checkpoint is not None:
+            self._load_model()
+        else:
+            print("No trained model for evaluation provided")
+            import sys
+            sys.exit()
+
+        num_test = 10000
+
+        total_num_correct = 0.
+        total_num_test = 0.
+        total_loss = 0.
+        for i, (images,color_labels,labels) in enumerate(data_loader):
+            
+            start_time = time.time()
+            images = self._get_variable(images)
+            color_labels = self._get_variable(color_labels)
+            labels = self._get_variable(labels)
+
+            self.optim.zero_grad()
+            _, pred_label = self.net(images)
+
+
+            loss = self.loss(pred_label, torch.squeeze(labels))
+            
+            batch_size = images.shape[0]
+            total_num_correct += self._num_correct(pred_label,labels,topk=1).item()
+            total_loss += loss.item()*batch_size
+            total_num_test += batch_size
+               
+        avg_loss = total_loss/total_num_test
+        avg_acc = total_num_correct/total_num_test
+        msg = "EVALUATION LOSS  %.4f, ACCURACY : %.4f (%d/%d)" % \
+                        (avg_loss,avg_acc,int(total_num_correct),total_num_test)
+        self.logger.info(msg)
+
+
+
+    def _num_correct(self,outputs,labels,topk=1):
+        _, preds = outputs.topk(k=topk, dim=1)
+        preds = preds.t()
+        correct = preds.eq(labels.view(1, -1).expand_as(preds))
+        correct = correct.view(-1).sum()
+        return correct
+        
+
+
+    def _accuracy(self, outputs, labels):
+        batch_size = labels.size(0)
+        _, preds = outputs.topk(k=1, dim=1)
+        preds = preds.t()
+        correct = preds.eq(labels.view(1, -1).expand_as(preds))
+        correct = correct.view(-1).float().sum(0, keepdim=True)
+        accuracy = correct.mul_(100.0 / batch_size)
+        return accuracy
+
+    def _save_model(self, step):
+        torch.save({
+            'step': step,
+            'optim_state_dict': self.optim.state_dict(),
+            'net_state_dict': self.net.state_dict()
+        }, os.path.join(self.option.save_dir,self.option.exp_name, 'checkpoint_step_%04d.pth' % step))
+        print('checkpoint saved. step : %d'%step)
+
+    def _load_model(self):
+        ckpt = torch.load(self.option.checkpoint)
+        self.net.load_state_dict(ckpt['net_state_dict'])
+        self.optim.load_state_dict(ckpt['optim_state_dict'])
+
+    def train(self, train_loader, val_loader=None):
+        self._initialization()
+        if self.option.checkpoint is not None:
+            self._load_model()
+
+        self._mode_setting(is_train=True)
+        timer = Timer(self.logger, self.option.max_step)
+        start_epoch = 0
+        for step in range(start_epoch, self.option.max_step):
+            if self.option.train_baseline:
+                self._train_step_baseline(train_loader, step)
+            else:
+                self._train_step(train_loader,step)
+            self.scheduler.step()
+            self.scheduler_bias.step()
+
 
             if step == 1 or step % self.option.save_step == 0 or step == (self.option.max_step-1):
                 if val_loader is not None:

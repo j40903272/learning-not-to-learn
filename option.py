@@ -29,7 +29,7 @@ parser.add_argument('--use_pretrain',     action='store_true',        help='whet
 parser.add_argument('--train_baseline',   action='store_true',        help='whether it train baseline or unlearning')
 
 
-parser.add_argument('--random_seed',                      type=int,   help='random seed')
+parser.add_argument('--random_seed',      default=87,     type=int,   help='random seed')
 parser.add_argument('--num_workers',      default=4,      type=int,   help='number of workers in data loader')
 parser.add_argument('--cudnn_benchmark',  default=True,   type=bool,  help='cuDNN benchmark')
 
