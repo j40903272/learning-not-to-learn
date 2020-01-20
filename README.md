@@ -4,11 +4,13 @@ This repository contains [PyTorch](https://pytorch.org) implementation.
 
 
 ## Requirements
+```
 cuda 9.0
 cudnn 7.4.2
 pytorch 1.1.0
 tqdm
 sklearn
+```
 
 ## Usage
 The organized version is [this]()
