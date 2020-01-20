@@ -1,0 +1,11 @@
+*.pt
+*.pth
+*.pdf
+*.npy
+*.pkl
+*.txt
+*.csv
+__pycache__
+unlearn_0.02
+base_0.02
+checkpoints
