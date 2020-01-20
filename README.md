@@ -24,7 +24,7 @@ baseline
 ![confmat](https://github.com/j40903272/learning-not-to-learn/blob/master/output/baseline_0.67.png)
 
 Our
-![confmat](adv_max_corr.png)
+![confmat](https://github.com/j40903272/learning-not-to-learn/blob/master/output/adv_max_corr.png)
 
 ### Contact
 Yun Da Tsai(bb04902103@gmail.com)
