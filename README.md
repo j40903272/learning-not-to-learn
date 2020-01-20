@@ -20,10 +20,11 @@ The annotations are writen in the notebook
 
 ## Results
 
-baseline
+##### baseline
+
 ![confmat](https://github.com/j40903272/learning-not-to-learn/blob/master/output/baseline_0.67.png)
 
-Our
+##### Our
 ![confmat](https://github.com/j40903272/learning-not-to-learn/blob/master/output/adv_max_corr.png)
 
 ### Contact
